@@ -39,7 +39,9 @@ REGISTER_URL=https://dacs-node.tailfa48ff.ts.net/colony-rfq/v0/register tsx bin/
 ```
 
 It generates an X25519 key under your data root, signs a registration with
-your wallet (the claim is the key, so nothing else identifies you). Approval is
+your wallet (the claim is the key, so nothing else identifies you). The URL
+must be `https://` (plain `http://` only to loopback): the credential binds
+your subnet to the host sealed inside it, and only that host is used. Approval is
 automatic for any authenticated request on this node and provisions a subnet only you and the
 seller share, funds your wallet on the host chain, and seals the credential to
 your X25519 key; `register.mts` decrypts it into
@@ -96,5 +98,6 @@ was reached. The public records never carry an offer, counter or turn price,
 and that property is the thing under test. The host chain behind the subnet is a
 one-validator dev chain, so its finality is only as trustworthy as our node;
 the public testnet is where the money moves. Node bugs come to us first, since
-the node runs an upstream branch with one local patch (history returns
-decrypted content to the authenticated member).
+the node runs an upstream branch with one local patch (history returns the
+stored ciphertext to the authenticated member, who decrypts it locally;
+kynesyslabs/node#1033).

@@ -33,6 +33,7 @@ import {
   CANONICAL_PROFILE_ID, createChannelSignatureAdapter, createDemosL2psClient, createFsSubnetProvisioner, createL2psInboxFeeder, createL2psTransport, createRegistrationService, createRegistrationStore, createRfqHttpTransport, createRfqInboxStore, createSessionIndex, fundOnLocalChain,
   demosAnchorStore, openDemosActor, openRoleStores, readEnvFile, staticMemberAuthority, startRfqTransportServer,
 } from "../src/index.js";
+import { createSerialLock } from "../src/walletLock.js";
 import type { ChannelMessageSignatureV1, Counterparty, DemosActor } from "../src/index.js";
 
 export const log = (event: Record<string, unknown>) => {
@@ -102,7 +103,9 @@ export async function bootstrapRole(role: "buyer" | "seller", env: Record<string
           return { uid: env["L2PS_UID"]!, keyHex: readFileSync(env["L2PS_KEY_FILE"]!, "utf8").trim(), ivHex: readFileSync(env["L2PS_IV_FILE"]!, "utf8").trim() };
         })();
     const subnetActor = await openDemosActor({ rpc: l2psRpc, secret, journalDir: join(root, "l2ps-journal") });
-    const l2psClient = await createDemosL2psClient({ demos: subnetActor.adapter.raw as never, subnet, rpc: l2psRpc, log });
+    // One nonce, one writer: every carrier client and the tester funder share this lock.
+    const subnetLock = createSerialLock();
+    const l2psClient = await createDemosL2psClient({ demos: subnetActor.adapter.raw as never, subnet, rpc: l2psRpc, log, lock: subnetLock });
     if (role === "seller" && env["L2PS_NODE_ROOT"]) {
       // Operator-side registration: testers register, the operator approves,
       // approval provisions a subnet on our node and funds the tester here.
@@ -110,10 +113,13 @@ export async function bootstrapRole(role: "buyer" | "seller", env: Record<string
       registration = createRegistrationService({
         store: createRegistrationStore({ path: join(root, "registrations.db") }),
         provisioner: createFsSubnetProvisioner({ nodeRoot: env["L2PS_NODE_ROOT"]!, rpc: env["L2PS_PUBLIC_RPC"] ?? l2psRpc }),
-        funder: { fund: async (addressHex) => { const out = await fundOnLocalChain({ demos: subnetActor.adapter.raw as never, to: `0x${addressHex}`, amountDem: fundDem }); if (out.status !== "confirmed") throw new Error(`funding ${out.txHash} ended ${out.status}`); return { txHash: out.txHash }; } },
+        funder: { fund: async (addressHex, onSigned) => { const out = await fundOnLocalChain({ demos: subnetActor.adapter.raw as never, to: `0x${addressHex}`, amountDem: fundDem, onSigned, lock: subnetLock }); if (out.status !== "confirmed") throw new Error(`funding ${out.txHash} ended ${out.status}`); return { txHash: out.txHash }; }, amountDem: fundDem },
         host: env["L2PS_PUBLIC_RPC"] ?? l2psRpc, log,
         // REGISTRATION_AUTO_APPROVE=all | did:demos:agent:…,did:demos:agent:…
+        // With `all`, REGISTRATION_AUTO_APPROVE_MAX (default 20) caps how many
+        // claims get provisioned and funded without an operator's approval.
         ...(env["REGISTRATION_AUTO_APPROVE"] === undefined ? {} : { autoApprove: env["REGISTRATION_AUTO_APPROVE"] === "all" ? "all" as const : env["REGISTRATION_AUTO_APPROVE"].split(",").map((x) => x.trim()).filter(Boolean) }),
+        autoApproveMax: Number(env["REGISTRATION_AUTO_APPROVE_MAX"] ?? 20),
       });
     }
     subnetClient = l2psClient;
@@ -130,7 +136,7 @@ export async function bootstrapRole(role: "buyer" | "seller", env: Record<string
       if (!clientsByUid.has(uid)) {
         const dir = join(env["L2PS_NODE_ROOT"]!, "data", "l2ps", uid);
         const peerSubnet = { uid, keyHex: readFileSync(join(dir, "private_key.txt"), "utf8").trim(), ivHex: readFileSync(join(dir, "iv.txt"), "utf8").trim() };
-        const client = await createDemosL2psClient({ demos: subnetActor.adapter.raw as never, subnet: peerSubnet, rpc: l2psRpc, log });
+        const client = await createDemosL2psClient({ demos: subnetActor.adapter.raw as never, subnet: peerSubnet, rpc: l2psRpc, log, lock: subnetLock });
         clientsByUid.set(uid, client);
         feeders.set(uid, createL2psInboxFeeder({ self: actor.signer, peers, client, inbox, log }));
         log({ event: "subnet-attached", uid, claim });

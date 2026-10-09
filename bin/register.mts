@@ -18,6 +18,11 @@ import { loadConfig, log } from "./common.mts";
 const env = loadConfig();
 const url = env["REGISTER_URL"] ?? process.env["REGISTER_URL"];
 if (!url) throw new Error("REGISTER_URL missing");
+{
+  const u = new URL(url);
+  const loopback = ["127.0.0.1", "::1", "localhost", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !loopback) throw new Error("REGISTER_URL must be https:// (plain http only to loopback): the status response names the host your subnet credential binds to");
+}
 const root = join(env["DACS_RFQ_ROOT"]!, "buyer");
 const dir = join(root, "subnet");
 mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -40,9 +45,11 @@ for (;;) {
   const view = await (await fetch(statusUrl)).json() as { status: string; uid?: string; host?: string; credential?: SealedCredential; note?: string };
   if (view.status === "approved" && view.credential) {
     const opened = openCredential(view.credential, privateKey) as { uid: string; keyHex: string; ivHex: string; host: string; fundingTx?: string };
-    // The operator's current public host wins over the one sealed at approval time
-    // (an operator may move hostnames; the sealed key material does not change).
-    writeFileSync(join(dir, "credential.json"), JSON.stringify({ uid: opened.uid, keyHex: opened.keyHex, ivHex: opened.ivHex, host: view.host ?? opened.host, fundingTx: opened.fundingTx, receivedAt: Date.now() }), { mode: 0o600 });
+    // Only the host sealed at approval is trusted: the clear-text status
+    // response is not authenticated, so a host it names could redirect this
+    // buyer's subnet reads. An operator who moves hostnames re-issues the seal.
+    if (view.host !== undefined && view.host !== opened.host) log({ event: "registration-host-ignored", sealed: opened.host, offered: view.host });
+    writeFileSync(join(dir, "credential.json"), JSON.stringify({ uid: opened.uid, keyHex: opened.keyHex, ivHex: opened.ivHex, host: opened.host, fundingTx: opened.fundingTx, receivedAt: Date.now() }), { mode: 0o600 });
     log({ event: "registration-approved", uid: opened.uid, host: opened.host, fundingTx: opened.fundingTx, credential: join(dir, "credential.json") });
     process.stdout.write(`Registered. Run: TRANSPORT=l2ps tsx bin/buyer.mts run\n`);
     process.exit(0);

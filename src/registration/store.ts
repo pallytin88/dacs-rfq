@@ -1,7 +1,10 @@
 /**
  * Durable registration queue (SQLite, 0600): one row per claim through
  * pending → approved | rejected. The approved row keeps the sealed credential
- * so the tester can fetch it again after a restart on either side.
+ * so the tester can fetch it again after a restart on either side. A pending
+ * row also keeps the subnet uid and the funding transfer's hash as soon as
+ * each exists, so an approval interrupted after the broadcast resumes with
+ * the same subnet and never funds the claim twice.
  */
 
 import BetterSqlite3 from "better-sqlite3";
@@ -28,6 +31,10 @@ export interface RegistrationStore {
   submit(request: Readonly<RegistrationRequest>, nowMs: number): "stored" | "duplicate" | "conflict";
   get(claim: string): RegistrationRow | null;
   list(status?: RegistrationStatus): RegistrationRow[];
+  /** Records the subnet minted for a pending claim, before any funding is broadcast. */
+  beginProvision(claim: string, uid: string, nowMs: number): void;
+  /** Records the signed funding transfer's hash for a pending claim, before it is broadcast. */
+  beginFunding(claim: string, fundingTx: string, nowMs: number): void;
   approve(claim: string, input: Readonly<{ uid: string; credentialJson: string; fundingTx?: string }>, nowMs: number): void;
   reject(claim: string, note: string, nowMs: number): void;
   approvedClaims(): string[];
@@ -65,6 +72,14 @@ export function createRegistrationStore(options: { path: string }): Registration
     list(status) {
       const rows = (status === undefined ? db.prepare("SELECT * FROM registrations ORDER BY requested_at").all() : db.prepare("SELECT * FROM registrations WHERE status = ? ORDER BY requested_at").all(status)) as Record<string, unknown>[];
       return rows.map(toRow);
+    },
+    beginProvision(claim, uid, nowMs) {
+      const changed = db.prepare("UPDATE registrations SET uid = ?, updated_at = ? WHERE claim = ? AND status = 'pending' AND uid IS NULL").run(uid, nowMs, claim).changes;
+      if (changed !== 1) throw new Error(`registration ${claim} is not pending or already has a subnet`);
+    },
+    beginFunding(claim, fundingTx, nowMs) {
+      const changed = db.prepare("UPDATE registrations SET funding_tx = ?, updated_at = ? WHERE claim = ? AND status = 'pending' AND funding_tx IS NULL").run(fundingTx, nowMs, claim).changes;
+      if (changed !== 1) throw new Error(`registration ${claim} is not pending or already funded`);
     },
     approve(claim, input, nowMs) {
       const changed = db.prepare("UPDATE registrations SET status = 'approved', uid = ?, credential_json = ?, funding_tx = ?, updated_at = ? WHERE claim = ? AND status = 'pending'")

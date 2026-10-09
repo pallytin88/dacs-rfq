@@ -172,7 +172,7 @@ export async function settleWithPayDem(options: SettleOptions): Promise<SettleOu
     // (for example a nonce race). That hash can never settle, so it is a
     // terminal absence the authority can release after independent
     // re-verification; the effect is then retried once under a fresh generation.
-    const recovered = await reconcileFailedPayDemTransfer({ authority: options.authority, reservation, reader: options.recover.reader, log });
+    const recovered = await reconcileFailedPayDemTransfer({ authority: options.authority, reservation, reader: options.recover.reader, payerAddressHex: options.authority.policy.wallet, log });
     if (recovered === "released") {
       log({ event: "settlement-retry", jobId: options.agreement.jobId });
       return settleWithPayDem({ ...options, recover: undefined });
@@ -251,15 +251,47 @@ async function readTransfer(reader: DemosTransactionReader, txHash: string) {
   return { record, content: record.content ?? {} };
 }
 
+/** The transfer a reservation expects: who pays whom, how much (OS). */
+export interface ExpectedTransfer {
+  payerAddressHex: string;
+  payee: string;
+  amountOs: string;
+}
+
+/** True when the observed transaction content names exactly this payer, payee and amount. */
+function contentMatches(content: { from?: unknown; to?: unknown; amount?: unknown; data?: unknown }, expected: ExpectedTransfer): boolean {
+  if (hex64(content.from) !== hex64(expected.payerAddressHex) || hex64(content.to) !== hex64(expected.payee)) return false;
+  if (amountOf(content.amount) !== expected.amountOs) return false;
+  // A native send also carries [to, amount] in its args; when present they must say the same thing.
+  const tuple = Array.isArray(content.data) ? (content.data as unknown[])[1] : undefined;
+  const args = tuple !== null && typeof tuple === "object" && Array.isArray((tuple as { args?: unknown[] }).args) ? (tuple as { args: unknown[] }).args : null;
+  if (args !== null && args.length >= 2 && (hex64(args[0]) !== hex64(expected.payee) || amountOf(args[1]) !== expected.amountOs)) return false;
+  return true;
+}
+
 /**
  * A transfer that the chain included with status `failed` can never settle:
  * its hash is spent and its nonce was consumed. Only that exact observation
  * authenticates a terminal absence; a merely unseen transaction never does.
+ * When the expected transfer is given, the failed transaction must also be
+ * that transfer (this payer, this payee, this amount): some other included
+ * failure must not release the reservation.
  */
-export async function isTerminallyFailedTransfer(reader: DemosTransactionReader, txHash: string): Promise<boolean> {
+export async function isTerminallyFailedTransfer(reader: DemosTransactionReader, txHash: string, expected?: ExpectedTransfer): Promise<boolean> {
   try {
-    const { record } = await readTransfer(reader, txHash);
-    return record.status === "failed" && hex64(record.hash) === hex64(txHash) && Number.isSafeInteger(record.blockNumber);
+    const { record, content } = await readTransfer(reader, txHash);
+    if (record.status !== "failed" || hex64(record.hash) !== hex64(txHash) || !Number.isSafeInteger(record.blockNumber)) return false;
+    return expected === undefined || contentMatches(content, expected);
+  } catch {
+    return false;
+  }
+}
+
+/** True when the chain holds this transfer as confirmed, for this payer, payee and amount. */
+export async function isConfirmedTransfer(reader: DemosTransactionReader, txHash: string, expected: ExpectedTransfer): Promise<boolean> {
+  try {
+    const { record, content } = await readTransfer(reader, txHash);
+    return record.status === "confirmed" && hex64(record.hash) === hex64(txHash) && contentMatches(content, expected);
   } catch {
     return false;
   }
@@ -275,23 +307,38 @@ export async function reconcileFailedPayDemTransfer(input: {
   authority: Pick<WalletSpendAuthorityV1, "reconcile">;
   reservation: WalletSpendReservationV1;
   reader: DemosTransactionReader;
+  /** The paying wallet (hex); the failed transfer must have been sent by it. */
+  payerAddressHex: string;
   txHash?: string;
   log?: (event: Readonly<Record<string, unknown>>) => void;
 }): Promise<"settled" | "released" | "existing" | "unrecoverable"> {
   const log = input.log ?? (() => {});
+  const expected: ExpectedTransfer = { payerAddressHex: input.payerAddressHex, payee: input.reservation.payee, amountOs: input.reservation.debits[0]!.expectedAmount };
   let pair = evidenceForReservation(input.reservation.reservationId);
-  if (pair === undefined && input.txHash !== undefined) {
-    const entry: SettlementEvidenceEntry = { txHash: input.txHash, amountOs: input.reservation.debits[0]!.expectedAmount, payee: input.reservation.payee, reservationId: input.reservation.reservationId };
-    const hash = sha256Hex(canonicalize({ txHash: input.txHash, amountOs: entry.amountOs, payee: entry.payee }));
+  if (pair !== undefined && input.txHash !== undefined && hex64(input.txHash) !== hex64(pair[1].txHash)) {
+    log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: input.txHash, result: "hash-differs-from-remembered", remembered: pair[1].txHash });
+    return "unrecoverable";
+  }
+  const candidate = pair?.[1].txHash ?? input.txHash;
+  if (candidate === undefined) return "unrecoverable";
+  // A transfer that did land settles the reservation; it is never released as absent.
+  if (await isConfirmedTransfer(input.reader, candidate, expected)) {
+    log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: candidate, result: "already-settled" });
+    return "settled";
+  }
+  if (!await isTerminallyFailedTransfer(input.reader, candidate, expected)) {
+    log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: candidate, result: "not-terminally-failed" });
+    return "unrecoverable";
+  }
+  if (pair === undefined) {
+    // Operator-supplied hash, verified above as this wallet's failed transfer
+    // for exactly this reservation; only now is it remembered as evidence.
+    const entry: SettlementEvidenceEntry = { txHash: candidate, amountOs: expected.amountOs, payee: expected.payee, reservationId: input.reservation.reservationId };
+    const hash = sha256Hex(canonicalize({ txHash: candidate, amountOs: entry.amountOs, payee: entry.payee }));
     rememberSettlementEvidence(hash, entry);
     pair = [hash, entry];
   }
-  if (pair === undefined) return "unrecoverable";
   const [evidenceHash, entry] = pair;
-  if (!await isTerminallyFailedTransfer(input.reader, entry.txHash)) {
-    log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: entry.txHash, result: "not-terminally-failed" });
-    return "unrecoverable";
-  }
   try {
     const result = await input.authority.reconcile(input.reservation, { disposition: "terminal-absent", evidenceHash });
     log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: entry.txHash, result });
@@ -341,19 +388,17 @@ export function createPayDemSettlementAuthenticator(options: {
     }
     if (observation.disposition === "terminal-absent") {
       // Only an included-but-failed transaction proves absence; `not-invoked` is never claimed here.
-      const failed = await isTerminallyFailedTransfer(options.reader, entry.txHash);
+      const failed = await isTerminallyFailedTransfer(options.reader, entry.txHash, { payerAddressHex: payer, payee: entry.payee, amountOs: entry.amountOs });
       log({ event: "settlement-authentication", ok: failed, txHash: entry.txHash, disposition: "terminal-absent" });
       return failed;
     }
     if (observation.disposition !== "settled") return false;
     try {
       const { record, content } = await readTransfer(options.reader, entry.txHash);
-      const args = Array.isArray(content.data) && Array.isArray((content.data as unknown[])[1]) ? ((content.data as unknown[])[1] as unknown[]) : [];
-      const tupleArgs = Array.isArray(content.data) && (content.data as unknown[])[1] !== null && typeof (content.data as unknown[])[1] === "object"
-        ? (((content.data as unknown[])[1] as { args?: unknown[] }).args ?? []) : args;
-      const amountMatches = amountOf(content.amount) === entry.amountOs || tupleArgs.some((a) => amountOf(a) === entry.amountOs);
+      // Confirmed, this hash, and the content names exactly this payer, payee and
+      // amount (both in `amount` and, when present, in the native-send args).
       const ok = record.status === "confirmed" && hex64(record.hash) === hex64(entry.txHash)
-        && hex64(content.from) === payer && hex64(content.to) === hex64(entry.payee) && amountMatches;
+        && contentMatches(content, { payerAddressHex: payer, payee: entry.payee, amountOs: entry.amountOs });
       log({ event: "settlement-authentication", ok, txHash: entry.txHash, status: record.status });
       return ok;
     } catch (cause) {

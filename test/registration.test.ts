@@ -55,7 +55,7 @@ describe("registration service over the transport server", () => {
     const service = createRegistrationService({
       store, host: "https://node.example/rpc", nowMs: () => 5_000_000,
       provisioner: createFsSubnetProvisioner({ nodeRoot, rpc: "https://node.example/rpc" }),
-      funder: { fund: async (addressHex) => { funded.push(addressHex); return { txHash: "tx-fund-1" }; } },
+      funder: { fund: async (addressHex, onSigned) => { await onSigned("tx-fund-1"); funded.push(addressHex); return { txHash: "tx-fund-1" }; } },
     });
     const inbox = createRfqInboxStore({ path: join(root, "inbox.db") });
     const server = await startRfqTransportServer({ self: keyObjectSigner("did:demos:agent:" + "70".repeat(32), generateKeyPairSync("ed25519").privateKey), peers: new Map(), inbox, registration: service });
@@ -99,5 +99,62 @@ describe("registration service over the transport server", () => {
     await server.close();
     inbox.close();
     store.close();
+  });
+
+  test("an approval interrupted after the funding broadcast resumes with the same subnet and never funds twice", async () => {
+    const root = tmp();
+    const nodeRoot = join(root, "node");
+    const store = createRegistrationStore({ path: join(root, "registrations.db") });
+    const broadcasts: string[] = [];
+    let crash = true;
+    const service = createRegistrationService({
+      store, host: "https://node.example/rpc", nowMs: () => 5_000_000,
+      provisioner: createFsSubnetProvisioner({ nodeRoot, rpc: "https://node.example/rpc" }),
+      funder: { fund: async (_addressHex, onSigned) => { await onSigned("tx-fund-7"); broadcasts.push("tx-fund-7"); if (crash) throw new Error("process died after broadcast"); return { txHash: "tx-fund-7" }; } },
+    });
+    const enc = generateX25519KeyPair();
+    await service.submit(await buildRegistrationRequest(tester, enc.publicKeyHex, 5_000_000));
+    await expect(service.approve(TESTER)).rejects.toThrow(/died/);
+    const pending = store.get(TESTER)!;
+    expect(pending.status).toBe("pending");
+    expect(pending.uid).toMatch(/^rfq_/);
+    expect(pending.fundingTx).toBe("tx-fund-7");
+    expect(broadcasts).toEqual(["tx-fund-7"]);
+    // Second attempt: same subnet, no second transfer, approved with the recorded hash.
+    crash = false;
+    const approved = await service.approve(TESTER);
+    expect(approved.status).toBe("approved");
+    expect(approved.uid).toBe(pending.uid);
+    expect(approved.fundingTx).toBe("tx-fund-7");
+    expect(broadcasts).toEqual(["tx-fund-7"]);
+    expect(readFileSync(join(nodeRoot, "data", "l2ps", approved.uid!, "private_key.txt"), "utf8").trim()).toHaveLength(64);
+    const opened = openCredential(JSON.parse(approved.credentialJson!) as never, enc.privateKey) as { uid: string; fundingTx: string };
+    expect(opened).toMatchObject({ uid: pending.uid, fundingTx: "tx-fund-7" });
+    // The funder refusing to sign leaves nothing recorded; the subnet is still kept for the retry.
+    store.close();
+  });
+
+  test("auto-approve `all` stops provisioning at the cap; listed claims are never capped", async () => {
+    const root = tmp();
+    const funded: string[] = [];
+    const claims = Array.from({ length: 3 }, () => { const k = generateKeyPairSync("ed25519"); return keyObjectSigner(demosAgentClaimRef(rawPublicKey(k.publicKey)), k.privateKey); });
+    const enc = generateX25519KeyPair();
+    const service = createRegistrationService({
+      store: createRegistrationStore({ path: join(root, "cap.db") }), host: "https://node.example/rpc", nowMs: () => 5_000_000,
+      provisioner: createFsSubnetProvisioner({ nodeRoot: join(root, "node"), rpc: "https://node.example/rpc" }),
+      funder: { fund: async (addressHex, onSigned) => { await onSigned(`tx-${addressHex.slice(0, 6)}`); funded.push(addressHex); return { txHash: `tx-${addressHex.slice(0, 6)}` }; } },
+      autoApprove: "all", autoApproveMax: 2,
+    });
+    expect(await service.submit(await buildRegistrationRequest(claims[0]!, enc.publicKeyHex, 5_000_000))).toMatchObject({ body: { status: "approved" } });
+    expect(await service.submit(await buildRegistrationRequest(claims[1]!, enc.publicKeyHex, 5_000_000))).toMatchObject({ body: { status: "approved" } });
+    // Third authenticated request: cap reached, waits for the operator, nothing funded.
+    expect(await service.submit(await buildRegistrationRequest(claims[2]!, enc.publicKeyHex, 5_000_000))).toMatchObject({ body: { status: "pending" } });
+    expect(funded).toHaveLength(2);
+    // The operator can still approve it by hand.
+    expect((await service.approve(claims[2]!.claim)).status).toBe("approved");
+    expect(funded).toHaveLength(3);
+    // The default cap applies when none is given.
+    const defaults = createRegistrationService({ store: createRegistrationStore({ path: join(root, "cap2.db") }), host: "h", provisioner: createFsSubnetProvisioner({ nodeRoot: join(root, "node2"), rpc: "h" }), autoApprove: "all" });
+    expect(defaults).toBeTruthy();
   });
 });

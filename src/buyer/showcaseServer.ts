@@ -39,7 +39,7 @@ export interface ShowcaseServer {
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
   const bytes = Buffer.from(JSON.stringify(body), "utf8");
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": String(bytes.length), "cache-control": "no-store", "access-control-allow-origin": "*" });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": String(bytes.length), "cache-control": "no-store" });
   response.end(bytes);
 }
 

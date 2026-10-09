@@ -8,7 +8,9 @@
 
 import { L2PS } from "@kynesyslabs/demosdk/l2ps";
 import type { L2psCarrierClient, L2psHistoryEntry } from "./l2ps.js";
-import { createSerialLock } from "../walletLock.js";
+import { createSerialLock, type SerialLock } from "../walletLock.js";
+
+const hex = (value: unknown): string | null => (typeof value === "string" ? value.replace(/^0x/, "").toLowerCase() : null);
 
 export interface L2psSubnetConfig {
   uid: string;
@@ -48,6 +50,12 @@ export async function createDemosL2psClient(options: {
    */
   legacyHistoryAuth?: boolean;
   log?: (event: Readonly<Record<string, unknown>>) => void;
+  /**
+   * Serialises every broadcast from this demos instance. Pass the same lock to
+   * every client and funder that shares the instance: each broadcast takes the
+   * account nonce, so two writers without a common lock race on it.
+   */
+  lock?: SerialLock;
 }): Promise<L2psCarrierClient> {
   if (!/^[0-9a-f]{64}$/i.test(options.subnet.keyHex.trim()) || !/^[0-9a-f]{32}$/i.test(options.subnet.ivHex.trim())) {
     throw new Error("subnet key must be 64 hex characters and the IV 32");
@@ -56,8 +64,32 @@ export async function createDemosL2psClient(options: {
   const amount = options.amountOs ?? 1;
   const l2ps = await L2PS.create(hexToBinary(options.subnet.keyHex), hexToBinary(options.subnet.ivHex));
   l2ps.setConfig({ uid: options.subnet.uid, config: { created_at_block: 0, known_rpcs: [options.rpc] } });
-  const lock = createSerialLock();
+  const lock = options.lock ?? createSerialLock();
   const address = () => options.demos.getAddress();
+  /**
+   * The row's transaction content, decrypted here with the subnet key from
+   * the ciphertext the node stored. The node's own `content` field is never
+   * used: the history read proves the reader's address to the node, not the
+   * node to the reader, so only what this key opens is trusted.
+   */
+  const decryptRow = async (row: any): Promise<Record<string, unknown> | null> => {
+    const stored = row?.encrypted_payload;
+    if (stored === null || stored === undefined || typeof stored !== "object") return null;
+    // The node stores the whole outer `l2psEncryptedTx`; accept a bare
+    // payload (`encrypted_data`, `tag`, `original_hash`, ...) as well.
+    const outer = typeof stored.encrypted_data === "string"
+      ? { content: { type: "l2psEncryptedTx", data: ["l2psEncryptedTx", stored] } }
+      : stored;
+    try {
+      const inner = await l2ps.decryptTx(outer as never) as unknown as { hash?: unknown; content?: Record<string, unknown> } | null;
+      if (inner === null || typeof inner !== "object" || inner.content === undefined) return null;
+      if (hex(inner.hash) !== hex(row?.hash)) return null;
+      return inner.content;
+    } catch (cause) {
+      log({ event: "l2ps-history-row-unreadable", hash: String(row?.hash ?? "").slice(0, 16), reason: cause instanceof Error ? cause.message : String(cause) });
+      return null;
+    }
+  };
 
   return {
     address,
@@ -94,10 +126,10 @@ export async function createDemosL2psClient(options: {
         limit: opts?.limit ?? 100, ...(opts?.since === undefined ? {} : { since: opts.since }),
         ...(options.legacyHistoryAuth === true ? { legacyAuth: true } : {}),
       });
-      return page.transactions.map((row: any): L2psHistoryEntry => ({
+      return Promise.all(page.transactions.map(async (row: any): Promise<L2psHistoryEntry> => ({
         hash: String(row.hash), from: String(row.from ?? row.from_address ?? ""), to: String(row.to ?? row.to_address ?? ""),
-        status: String(row.status), timestamp: Number(row.timestamp), content: row.content ?? null,
-      }));
+        status: String(row.status), timestamp: Number(row.timestamp), content: await decryptRow(row),
+      })));
     },
   };
 }

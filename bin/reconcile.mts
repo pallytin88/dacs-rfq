@@ -49,7 +49,7 @@ const reservation = buildPayDemReservation({
   wallet: role.actor.addressHex, chainId: "demos:testnet", maximumNetworkFeeOs: maxFeeOs.toString(),
 });
 log({ event: "reconcile-start", jobId, txHash, ledger, reservationId: reservation.reservationId });
-const result = await reconcileFailedPayDemTransfer({ authority, reservation, reader: txReader, txHash, log });
+const result = await reconcileFailedPayDemTransfer({ authority, reservation, reader: txReader, payerAddressHex: role.actor.addressHex, txHash, log });
 log({ event: "reconcile-result", jobId, result });
 await role.server.close();
 process.exit(result === "released" || result === "existing" ? 0 : 1);

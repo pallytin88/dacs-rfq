@@ -18,31 +18,49 @@ describe("createSerialLock", () => {
 
 describe("failed pay-dem transfer recovery", () => {
   const TX = "cd".repeat(32);
+  const PAYER = "c0".repeat(32);
+  const PAYEE = `0x${"70".repeat(32)}`;
   const reservation = {
-    reservationId: "pay-dem:01M4DZJS6XXKHB721MSRVVT1RQ", payee: `0x${"70".repeat(32)}`,
+    reservationId: "pay-dem:01M4DZJS6XXKHB721MSRVVT1RQ", payee: PAYEE,
     debits: [{ asset: "DEM", purpose: "service", expectedAmount: "9500000000", maximumAmount: "9500000000" }],
   } as never;
-  const failedTx = { response: { status: "failed", hash: TX, blockNumber: 480877, attrs: { code: "TX_NONCE_INVALID_LOW" } } };
+  const content = (over: Record<string, unknown> = {}) => ({ from: `0x${PAYER}`, to: PAYEE, amount: "9500000000", data: ["native", { nativeOperation: "send", args: ["70".repeat(32), "9500000000"] }], ...over });
+  const failedTx = { response: { status: "failed", hash: TX, blockNumber: 480877, attrs: { code: "TX_NONCE_INVALID_LOW" }, content: content() } };
+  const expected = { payerAddressHex: PAYER, payee: PAYEE, amountOs: "9500000000" };
+  const reader = (tx: unknown) => ({ async getTxByHash() { return tx; } });
 
-  test("only an included-but-failed transaction counts as terminal absence", async () => {
-    expect(await isTerminallyFailedTransfer({ async getTxByHash() { return failedTx; } }, TX)).toBe(true);
-    expect(await isTerminallyFailedTransfer({ async getTxByHash() { return { response: { status: "confirmed", hash: TX, blockNumber: 1 } }; } }, TX)).toBe(false);
-    expect(await isTerminallyFailedTransfer({ async getTxByHash() { return { response: { status: "failed", hash: TX } }; } }, TX)).toBe(false);
+  test("only an included-but-failed transaction, for exactly this transfer, counts as terminal absence", async () => {
+    expect(await isTerminallyFailedTransfer(reader(failedTx), TX)).toBe(true);
+    expect(await isTerminallyFailedTransfer(reader(failedTx), TX, expected)).toBe(true);
+    expect(await isTerminallyFailedTransfer(reader({ response: { status: "confirmed", hash: TX, blockNumber: 1, content: content() } }), TX)).toBe(false);
+    expect(await isTerminallyFailedTransfer(reader({ response: { status: "failed", hash: TX, content: content() } }), TX)).toBe(false);
     expect(await isTerminallyFailedTransfer({ async getTxByHash() { throw new Error("rpc"); } }, TX)).toBe(false);
+    // Some other failed transfer of this wallet (other payee, other amount, other payer) proves nothing about this reservation.
+    expect(await isTerminallyFailedTransfer(reader({ response: { ...failedTx.response, content: content({ to: `0x${"11".repeat(32)}` }) } }), TX, expected)).toBe(false);
+    expect(await isTerminallyFailedTransfer(reader({ response: { ...failedTx.response, content: content({ amount: "1" }) } }), TX, expected)).toBe(false);
+    expect(await isTerminallyFailedTransfer(reader({ response: { ...failedTx.response, content: content({ from: `0x${"ff".repeat(32)}` }) } }), TX, expected)).toBe(false);
   });
 
-  test("reconciles the held reservation as terminal absence after re-verifying on chain", async () => {
+  test("reconciles the held reservation as terminal absence only for this wallet's failed transfer, and never a settled one", async () => {
     const calls: unknown[] = [];
     const authority = { async reconcile(r: unknown, o: unknown) { calls.push([r, o]); return "released" as const; } };
-    const result = await reconcileFailedPayDemTransfer({ authority, reservation, reader: { async getTxByHash() { return failedTx; } }, txHash: TX });
+    // An operator hash for some other failed transfer is refused before any evidence is written.
+    const otherFailed = { response: { ...failedTx.response, content: content({ to: `0x${"11".repeat(32)}` }) } };
+    expect(await reconcileFailedPayDemTransfer({ authority, reservation, reader: reader(otherFailed), payerAddressHex: PAYER, txHash: TX })).toBe("unrecoverable");
+    expect(calls).toHaveLength(0);
+    const result = await reconcileFailedPayDemTransfer({ authority, reservation, reader: reader(failedTx), payerAddressHex: PAYER, txHash: TX });
     expect(result).toBe("released");
     expect(calls).toHaveLength(1);
     expect((calls[0] as [unknown, { disposition: string }])[1].disposition).toBe("terminal-absent");
-    // A confirmed transfer is never released, and a refusal by the authority is reported, not retried.
-    rememberSettlementEvidence("ev-x", { txHash: TX, amountOs: "9500000000", payee: `0x${"70".repeat(32)}`, reservationId: "pay-dem:other" });
-    const confirmed = await reconcileFailedPayDemTransfer({ authority, reservation: { ...(reservation as object), reservationId: "pay-dem:other" } as never, reader: { async getTxByHash() { return { response: { status: "confirmed", hash: TX, blockNumber: 2 } }; } } });
-    expect(confirmed).toBe("unrecoverable");
+    // A confirmed transfer for the reservation is reported as settled, never released.
+    rememberSettlementEvidence("ev-x", { txHash: TX, amountOs: "9500000000", payee: PAYEE, reservationId: "pay-dem:other" });
+    const other = { ...(reservation as object), reservationId: "pay-dem:other" } as never;
+    expect(await reconcileFailedPayDemTransfer({ authority, reservation: other, reader: reader({ response: { status: "confirmed", hash: TX, blockNumber: 2, content: content() } }), payerAddressHex: PAYER })).toBe("settled");
+    // An operator hash that differs from the remembered transfer is refused.
+    expect(await reconcileFailedPayDemTransfer({ authority, reservation: other, reader: reader(failedTx), payerAddressHex: PAYER, txHash: "ab".repeat(32) })).toBe("unrecoverable");
+    expect(calls).toHaveLength(1);
+    // A refusal by the authority is reported, not retried.
     const refusing = { async reconcile() { throw new Error("wallet spend recovery cannot supersede a live worker"); } };
-    expect(await reconcileFailedPayDemTransfer({ authority: refusing, reservation, reader: { async getTxByHash() { return failedTx; } }, txHash: TX })).toBe("unrecoverable");
+    expect(await reconcileFailedPayDemTransfer({ authority: refusing, reservation, reader: reader(failedTx), payerAddressHex: PAYER, txHash: TX })).toBe("unrecoverable");
   });
 });

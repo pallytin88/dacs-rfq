@@ -215,7 +215,11 @@ that a model drives through MCP.
    the loser is included as `failed` (`TX_NONCE_INVALID_LOW`). A settled
    transfer is authenticated by reading it back from the node; a transfer the
    chain included as `failed` is reconciled as terminal absence automatically,
-   or by an operator with `SPEND_LEDGER_EPOCH=… tsx bin/reconcile.mts <jobId> <txHash>`
+   or by an operator with `SPEND_LEDGER_EPOCH=… tsx bin/reconcile.mts <jobId> <txHash>`;
+   either way the failed transaction must be this wallet's transfer to the
+   reserved payee for the reserved amount, an operator hash that differs from
+   the remembered one is refused, and a transfer the chain confirmed is
+   reported settled and never released
    (stop the buyer first). Remembered evidence lives in `<root>/settlement-evidence.json`.
 5. Model: point ChatGPT at the MCP endpoint (TLS and a public hostname are needed for that; both servers refuse non-loopback binds without TLS material), or run the scripted driver: `MCP_TOKEN=… tsx bin/drive.mts`.
 
@@ -269,11 +273,15 @@ own identity (printed at boot as "Our public key is") to
 `manifest.json`, set `SHARD_SIZE=1` in `.env`, and reset the database
 (`DROP DATABASE demos` inside the container; the bind-mounted data directory
 is root-owned). The node then forges as a one-member committee and carriers
-reach `confirmed` within seconds. One local patch is applied to the node:
-the authenticated history read also returns the decrypted `content` of each
-row (`src/libs/l2ps/historyPayload.ts` `resolveHistoryContent`,
+reach `confirmed` within seconds. One local patch is applied to the node
+(kynesyslabs/node#1033): the authenticated history read also returns each
+row's stored ciphertext (`encrypted_payload`,
 `src/libs/network/handlers/l2psHandlers.ts`); upstream returns only the
-message string, which cannot carry a signed envelope.
+message string, which cannot carry a signed envelope. The member decrypts
+that ciphertext locally with the subnet key and checks the decrypted hash
+against the row (`src/transport/l2psDemos.ts`); a `content` field offered
+by any node is never used, since the history signature proves the reader to
+the node and not the node to the reader.
 
 First mixed-mode run (2026-10-08): job `01M4EHYZ8S92A61TP04FRDAZVM`, every
 channel packet an encrypted subnet transaction confirmed in 2–7 s, commitment
@@ -310,7 +318,14 @@ fails with `Cannot find module '@noble/hashes/sha3'`, nest a 1.8.0 copy under
   loads a new subnet on its first transaction, no restart.
 - Approval policy: `REGISTRATION_AUTO_APPROVE=all` (open test network) or a
   comma list of claims approves on submit; otherwise every request waits for
-  `bin/approve.mts`.
+  `bin/approve.mts`. With `all`, `REGISTRATION_AUTO_APPROVE_MAX` (default 20)
+  bounds how many claims are provisioned and funded unattended; later
+  requests stay pending for the operator. Approval records the minted subnet
+  and the signed funding hash before the fund is broadcast, so an approval
+  interrupted mid-way resumes with the same subnet and never funds twice.
+- The tester keeps only the host sealed into the credential; `register.mts`
+  requires an `https://` `REGISTER_URL` off loopback and ignores a host named
+  by the clear-text status response.
 - Supervision: systemd user units `dacs-postgres`, `dacs-node`, `dacs-seller`,
   `dacs-buyer`, `dacs-edge`, `dacs-tunnel`, `dacs-caddy` in
   `~/.config/systemd/user` (env files in `~/.dacs-rfq/service/`, lingering
