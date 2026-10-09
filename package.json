@@ -1,0 +1,23 @@
+{
+  "name": "@colony/dacs-rfq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SuperColony private RFQ negotiation adapters for @kynesyslabs/dacs: channel signature profiles, SQLite channel reservation, role-local stores and an interim authenticated HTTP transport (L2PS transport pending).",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "dependencies": {
+    "@kynesyslabs/dacs": "file:../../dacs-sdk",
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "vitest": "^3.0.5"
+  }
+}
