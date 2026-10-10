@@ -77,7 +77,9 @@ both statements true without L2PS:
 - `drain.ts`: feeds stored packets into the role's lifecycle client in arrival
   order and marks them processed only after the client recorded its outcome.
 
-Label it in any UI as: *private negotiation, L2PS transport coming.*
+Label it in any UI as: *private negotiation over an L2PS subnet; listing, vet
+records, commitment and payment public.* The HTTP transport is the offline
+reference path, not the live one.
 
 ### Step 5 — `src/buyer/`: the buyer as a tool the model calls
 
@@ -358,11 +360,17 @@ fails with `Cannot find module '@noble/hashes/sha3'`, nest a 1.8.0 copy under
 
 ## Tests
 
+From a standalone checkout (the tester bundle or the public repo), after
+`./setup.sh` has linked the sibling `dacs-sdk` tree:
+
 ```bash
-cd packages/dacs-rfq
-node ../../dacs-sdk/node_modules/.bin/vitest run
-../../node_modules/.bin/tsc --noEmit -p tsconfig.json
+./node_modules/.bin/vitest run
+../dacs-sdk/node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
+
+Inside the colony monorepo the same two commands are
+`node ../../dacs-sdk/node_modules/.bin/vitest run` and
+`../../node_modules/.bin/tsc --noEmit -p tsconfig.json` from `packages/dacs-rfq`.
 
 `test/showcase.e2e.test.ts` drives the buyer purely through MCP tool calls
 against a seller daemon over the interim transport, with real files, an
@@ -375,24 +383,17 @@ offer on the seller.
 
 ## Dependency note
 
-The colony root `npm install` currently fails on the `file:../../dacs-sdk`
-link (npm arborist `edgesOut` error). Until that is fixed, these symlinks in
-the root `node_modules` make the package resolve against the SDK's own
-installed tree:
+A standalone checkout gets everything from `./setup.sh`: it pins the
+`dacs-sdk` commit, installs `@kynesyslabs/demosdk` 4.0.18 (version and tarball
+integrity checked) plus the pinned tools inside the SDK tree, and symlinks them
+into this package's `node_modules`. Re-run it after any `npm ci` or
+`npm install` inside `dacs-sdk/`, since those revert demosdk to the manifest's
+`^4.0.16`; 4.0.18 adds the signed L2PS history read the Step 4 transport needs.
 
-```
-node_modules/@kynesyslabs/dacs   -> ../../dacs-sdk
-node_modules/better-sqlite3      -> ../dacs-sdk/node_modules/better-sqlite3
-node_modules/vitest              -> ../dacs-sdk/node_modules/vitest
-node_modules/@types/better-sqlite3 -> ../../dacs-sdk/node_modules/@types/better-sqlite3
-node_modules/@colony/dacs-rfq    -> ../../packages/dacs-rfq
-```
-
-The SDK tree carries `@kynesyslabs/demosdk` 4.0.18 (installed with
-`npm install --no-save @kynesyslabs/demosdk@4.0.18` inside `dacs-sdk/`; its
-manifest still pins `^4.0.16`). 4.0.18 adds the signed L2PS history read
-(`l2ps/history`) the Step 4 transport needs. An `npm ci` or `npm install` in
-`dacs-sdk/` reverts to 4.0.16; re-run the `--no-save` install afterwards.
+In the colony monorepo the root `npm install` fails on the `file:../../dacs-sdk`
+link (npm arborist `edgesOut` error), so the root `node_modules` carries the
+same symlinks by hand (`@kynesyslabs/dacs`, `better-sqlite3`, `vitest`,
+`@types/better-sqlite3`, `@colony/dacs-rfq`).
 
 The SDK must be built (`cd dacs-sdk && npm install && npm run build`) because
 its `exports` map points at `dist/`. Node 20 or 22 only.

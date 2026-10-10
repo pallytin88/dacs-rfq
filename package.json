@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "SuperColony private RFQ negotiation adapters for @kynesyslabs/dacs: channel signature profiles, SQLite channel reservation, role-local stores and an interim authenticated HTTP transport (L2PS transport pending).",
+  "description": "SuperColony private RFQ negotiation adapters for @kynesyslabs/dacs: channel signature profiles, SQLite channel reservation, role-local stores and an L2PS subnet transport on a self-hosted Demos node (interim authenticated HTTP transport kept as the offline reference path).",
   "main": "src/index.ts",
   "scripts": {
     "test": "vitest run",
