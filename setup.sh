@@ -22,7 +22,13 @@ if [ "$actual" != "$SDK_COMMIT" ]; then echo "dacs-sdk is at $actual, expected $
 # demosdk 4.0.18 and the tools this package needs, installed in ONE call (each
 # `npm install --no-save` prunes what a previous one added), at pinned versions.
 ( cd "$SDK" && npm install --no-save @kynesyslabs/demosdk@4.0.18 tsx@4.21.0 better-sqlite3@12.6.2 vitest@4.1.8 @types/better-sqlite3@9.6.0 @types/node@20.19.42 )
+# Version AND tarball integrity: npm records what it actually unpacked in the
+# hidden lockfile, so a substituted 4.0.18 tarball fails here.
+DEMOSDK_INTEGRITY="sha512-6yomgfl6MLKDWRCI00WGBylsmChWjyIWlum98tB/TDCbhl/03szJESVbq/+vsqVQsmvT0uk+WXcslhG84kD2XQ=="
 node -e 'const v=require(process.argv[1]).version; if (v!=="4.0.18") { console.error("demosdk", v, "installed; 4.0.18 required"); process.exit(1) }' "$SDK/node_modules/@kynesyslabs/demosdk/package.json"
+node -e '
+const lock = require(process.argv[1]).packages["node_modules/@kynesyslabs/demosdk"];
+if (!lock || lock.integrity !== process.argv[2]) { console.error("demosdk integrity", lock && lock.integrity, "!= pinned", process.argv[2]); process.exit(1) }' "$SDK/node_modules/.package-lock.json" "$DEMOSDK_INTEGRITY"
 for m in tsx better-sqlite3 vitest @types/better-sqlite3 @types/node; do [ -e "$SDK/node_modules/$m/package.json" ] || { echo "$m missing after install" >&2; exit 1; }; done
 mkdir -p "$HERE/node_modules/@kynesyslabs" "$HERE/node_modules/@types"
 ln -sfn "$SDK" "$HERE/node_modules/@kynesyslabs/dacs"
