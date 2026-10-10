@@ -12,6 +12,7 @@ import { canonicalDemosAgentPublicKey } from "@kynesyslabs/dacs/identity";
 import { sealCredential } from "./credential.js";
 import type { SealedCredential } from "./credential.js";
 import { verifyRegistrationRequest } from "./request.js";
+import { createSerialLock } from "../walletLock.js";
 import type { RegistrationStore, RegistrationRow } from "./store.js";
 
 export interface ProvisionedSubnet { uid: string; keyHex: string; ivHex: string }
@@ -52,6 +53,8 @@ export interface RegistrationServiceOptions {
    * funds a wallet). Default 20. Listed claims are never capped.
    */
   autoApproveMax?: number;
+  /** Total DEM unattended approvals may fund; default `autoApproveMax` × the funder's per-approval amount. */
+  autoApproveMaxFundDem?: number;
   nowMs?: () => number;
   log?: (event: Readonly<Record<string, unknown>>) => void;
 }
@@ -76,6 +79,25 @@ export interface RegistrationService {
 export function createRegistrationService(options: RegistrationServiceOptions): RegistrationService {
   const nowMs = options.nowMs ?? Date.now;
   const log = options.log ?? (() => {});
+  const approvals = createSerialLock();
+  const fundDem = options.funder?.amountDem ?? 0;
+  /**
+   * `autoApprove: "all"` is bounded two ways: by the number of claims
+   * provisioned unattended (`autoApproveMax`, default 20) and by the DEM those
+   * approvals may send in total (`autoApproveMaxFundDem`, default cap × the
+   * per-approval amount). Rows that already hold a funding hash count, so an
+   * approval interrupted after its broadcast still spends its share.
+   */
+  const unattendedBudgetExhausted = (): Record<string, number> | null => {
+    const cap = options.autoApproveMax ?? 20;
+    const rows = options.store.list();
+    const provisioned = rows.filter((r) => r.status === "approved" || r.fundingTx !== undefined);
+    const spentDem = provisioned.filter((r) => r.fundingTx !== undefined).length * fundDem;
+    const maxFundDem = options.autoApproveMaxFundDem ?? cap * fundDem;
+    if (provisioned.length >= cap) return { approved: provisioned.length, cap };
+    if (fundDem > 0 && spentDem + fundDem > maxFundDem) return { spentDem, nextDem: fundDem, maxFundDem };
+    return null;
+  };
   const service: RegistrationService = {
     async submit(body) {
       const verified = verifyRegistrationRequest(body, nowMs());
@@ -89,13 +111,14 @@ export function createRegistrationService(options: RegistrationServiceOptions): 
       const claim = verified.request.claim;
       const listed = Array.isArray(options.autoApprove) && options.autoApprove.includes(claim);
       const auto = options.autoApprove === "all" || listed;
-      // `all` is bounded: once the cap of approved claims is reached, further
-      // requests wait for the operator instead of being provisioned and funded.
-      const cap = options.autoApproveMax ?? 20;
-      const capped = options.autoApprove === "all" && !listed && options.store.approvedClaims().length >= cap;
-      if (outcome === "stored" && auto && capped) log({ event: "registration-auto-approve-capped", claim, approved: options.store.approvedClaims().length, cap });
-      if (outcome === "stored" && auto && !capped) {
-        try { await service.approve(claim); } catch (cause) { log({ event: "registration-auto-approve-failed", claim, reason: cause instanceof Error ? cause.message : String(cause) }); }
+      if (outcome === "stored" && auto) {
+        // The budget check and the approval run under one lock, so two
+        // overlapping submits cannot both read a count under the cap.
+        await approvals(async () => {
+          const budget = unattendedBudgetExhausted();
+          if (budget !== null && !listed) { log({ event: "registration-auto-approve-capped", claim, ...budget }); return; }
+          try { await service.approve(claim); } catch (cause) { log({ event: "registration-auto-approve-failed", claim, reason: cause instanceof Error ? cause.message : String(cause) }); }
+        });
       }
       const row = options.store.get(claim)!;
       return { status: outcome === "stored" ? 202 : 200, body: { status: row.status, claim: row.claim } };

@@ -90,6 +90,10 @@ export function createSellerDaemon<TSignature>(options: SellerDaemonOptions<TSig
     return { status: opened.status === "conflict" ? "rejected" : opened.status, reason: "reason" in opened ? opened.reason : undefined };
   };
 
+  /** Jobs whose record the store refuses; retried only after a restart. */
+
+  const archived = new Set<string>();
+
   async function tick() {
     const errors: string[] = [];
     let opened = 0;
@@ -99,13 +103,27 @@ export function createSellerDaemon<TSignature>(options: SellerDaemonOptions<TSig
     if (summary.stoppedAt !== undefined) errors.push(`drain stopped at ${summary.stoppedAt.packetId}: ${summary.stoppedAt.status} ${summary.stoppedAt.reason ?? ""}`);
     for (const entry of options.sessions.list()) {
       if (!before.has(entry.jobId)) opened += 1;
+      if (entry.settlement !== undefined || archived.has(entry.jobId)) continue;
       const resumed = await options.client.resumeOutbox(entry.jobId);
       if (resumed.status !== "ready" && resumed.status !== "duplicate") {
-        errors.push(`${entry.jobId}: outbox ${resumed.status} ${"reason" in resumed ? resumed.reason : ""}`);
+        const outcome = resumed.status;
+        const why = "reason" in resumed ? String(resumed.reason) : "";
+        if (outcome === "rejected" && /store version|corrupt|read-only|predates/i.test(why)) {
+          archived.add(entry.jobId);
+          log({ event: "job-archived", jobId: entry.jobId, reason: why });
+          continue;
+        }
+        errors.push(`${entry.jobId}: outbox ${outcome} ${why}`);
         continue;
       }
       const status = await options.client.getStatus(entry.jobId);
-      if (status.status !== "ok") { errors.push(`${entry.jobId}: store ${status.status}`); continue; }
+      if (status.status !== "ok") {
+        // A pre-bump record (read as corrupt) or a session the SDK no longer
+        // admits is logged once and left alone, not retried every tick.
+        archived.add(entry.jobId);
+        log({ event: "job-archived", jobId: entry.jobId, reason: `store ${status.status}${"reason" in status ? ` (${status.reason})` : ""}` });
+        continue;
+      }
       const session = status.record.session;
       if (session.status === "open" && session.expectedSender === options.sellerClaim && session.standingProposal !== undefined) {
         const result = await options.client.respond(entry.jobId, options.policy);

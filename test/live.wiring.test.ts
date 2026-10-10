@@ -30,6 +30,7 @@ import {
   staticMemberAuthority, verifyIdentityBundle,
 } from "../src/index.js";
 import type { ChannelMessageSignatureV1, Counterparty } from "../src/index.js";
+import { createProfileAdmission } from "../src/profileAdmission.js";
 
 const NOW = 1_780_000_000_000;
 const buyerKeys = generateKeyPairSync("ed25519");
@@ -111,6 +112,7 @@ describe("live wiring against an in-memory chain", () => {
       const client = createDurableRfqLifecycleClient<ChannelMessageSignatureV1>({
         role: roleName, store: stores.lifecycle, transport, reserveChannelId: (input) => stores.reservation.reserve(input),
         signChannelMessage: signature.signChannelMessage, verifyChannelMessage: signature.verifyChannelMessage,
+        profileAdmission: createProfileAdmission({ self: claim, members: () => peers.keys() }),
         agreementSigner: { party: claim, algorithm: "ed25519", sign: (bytes: Uint8Array) => signer.sign(bytes) },
         verifyAgreementContribution: (input) => {
           const key = peers.get(input.party);

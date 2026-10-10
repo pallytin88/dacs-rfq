@@ -30,11 +30,10 @@ describe("failed pay-dem transfer recovery", () => {
   const reader = (tx: unknown) => ({ async getTxByHash() { return tx; } });
 
   test("only an included-but-failed transaction, for exactly this transfer, counts as terminal absence", async () => {
-    expect(await isTerminallyFailedTransfer(reader(failedTx), TX)).toBe(true);
     expect(await isTerminallyFailedTransfer(reader(failedTx), TX, expected)).toBe(true);
-    expect(await isTerminallyFailedTransfer(reader({ response: { status: "confirmed", hash: TX, blockNumber: 1, content: content() } }), TX)).toBe(false);
-    expect(await isTerminallyFailedTransfer(reader({ response: { status: "failed", hash: TX, content: content() } }), TX)).toBe(false);
-    expect(await isTerminallyFailedTransfer({ async getTxByHash() { throw new Error("rpc"); } }, TX)).toBe(false);
+    expect(await isTerminallyFailedTransfer(reader({ response: { status: "confirmed", hash: TX, blockNumber: 1, content: content() } }), TX, expected)).toBe(false);
+    expect(await isTerminallyFailedTransfer(reader({ response: { status: "failed", hash: TX, content: content() } }), TX, expected)).toBe(false);
+    expect(await isTerminallyFailedTransfer({ async getTxByHash() { throw new Error("rpc"); } }, TX, expected)).toBe(false);
     // Some other failed transfer of this wallet (other payee, other amount, other payer) proves nothing about this reservation.
     expect(await isTerminallyFailedTransfer(reader({ response: { ...failedTx.response, content: content({ to: `0x${"11".repeat(32)}` }) } }), TX, expected)).toBe(false);
     expect(await isTerminallyFailedTransfer(reader({ response: { ...failedTx.response, content: content({ amount: "1" }) } }), TX, expected)).toBe(false);
@@ -53,11 +52,15 @@ describe("failed pay-dem transfer recovery", () => {
     expect(calls).toHaveLength(1);
     expect((calls[0] as [unknown, { disposition: string }])[1].disposition).toBe("terminal-absent");
     // A confirmed transfer for the reservation is reported as settled, never released.
-    rememberSettlementEvidence("ev-x", { txHash: TX, amountOs: "9500000000", payee: PAYEE, reservationId: "pay-dem:other" });
+    const TX2 = "ef".repeat(32);
+    rememberSettlementEvidence("ev-x", { txHash: TX2, amountOs: "9500000000", payee: PAYEE, reservationId: "pay-dem:other" });
     const other = { ...(reservation as object), reservationId: "pay-dem:other" } as never;
-    expect(await reconcileFailedPayDemTransfer({ authority, reservation: other, reader: reader({ response: { status: "confirmed", hash: TX, blockNumber: 2, content: content() } }), payerAddressHex: PAYER })).toBe("settled");
+    expect(await reconcileFailedPayDemTransfer({ authority, reservation: other, reader: reader({ response: { status: "confirmed", hash: TX2, blockNumber: 2, content: content() } }), payerAddressHex: PAYER })).toBe("settled");
     // An operator hash that differs from the remembered transfer is refused.
     expect(await reconcileFailedPayDemTransfer({ authority, reservation: other, reader: reader(failedTx), payerAddressHex: PAYER, txHash: "ab".repeat(32) })).toBe("unrecoverable");
+    // A hash this buyer remembered for another reservation never stands for this one, even as a matching failed transfer.
+    const third = { ...(reservation as object), reservationId: "pay-dem:third" } as never;
+    expect(await reconcileFailedPayDemTransfer({ authority, reservation: third, reader: reader(failedTx), payerAddressHex: PAYER, txHash: TX })).toBe("unrecoverable");
     expect(calls).toHaveLength(1);
     // A refusal by the authority is reported, not retried.
     const refusing = { async reconcile() { throw new Error("wallet spend recovery cannot supersede a live worker"); } };

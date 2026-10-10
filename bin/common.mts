@@ -33,7 +33,8 @@ import {
   CANONICAL_PROFILE_ID, createChannelSignatureAdapter, createDemosL2psClient, createFsSubnetProvisioner, createL2psInboxFeeder, createL2psTransport, createRegistrationService, createRegistrationStore, createRfqHttpTransport, createRfqInboxStore, createSessionIndex, fundOnLocalChain,
   demosAnchorStore, openDemosActor, openRoleStores, readEnvFile, staticMemberAuthority, startRfqTransportServer,
 } from "../src/index.js";
-import { createSerialLock } from "../src/walletLock.js";
+import { createWalletFileLock } from "../src/walletFileLock.js";
+import { createProfileAdmission } from "../src/profileAdmission.js";
 import type { ChannelMessageSignatureV1, Counterparty, DemosActor } from "../src/index.js";
 
 export const log = (event: Record<string, unknown>) => {
@@ -103,8 +104,10 @@ export async function bootstrapRole(role: "buyer" | "seller", env: Record<string
           return { uid: env["L2PS_UID"]!, keyHex: readFileSync(env["L2PS_KEY_FILE"]!, "utf8").trim(), ivHex: readFileSync(env["L2PS_IV_FILE"]!, "utf8").trim() };
         })();
     const subnetActor = await openDemosActor({ rpc: l2psRpc, secret, journalDir: join(root, "l2ps-journal") });
-    // One nonce, one writer: every carrier client and the tester funder share this lock.
-    const subnetLock = createSerialLock();
+    // One nonce, one writer: every carrier client and the tester funder in this
+    // process share this lock, and it also holds the per-wallet file lock so
+    // `bin/approve.mts` / `bin/fund-local.mts` on the same account wait for it.
+    const subnetLock = createWalletFileLock({ dir: join(env["DACS_RFQ_ROOT"]!, "locks"), wallet: subnetActor.addressHex });
     const l2psClient = await createDemosL2psClient({ demos: subnetActor.adapter.raw as never, subnet, rpc: l2psRpc, log, lock: subnetLock });
     if (role === "seller" && env["L2PS_NODE_ROOT"]) {
       // Operator-side registration: testers register, the operator approves,
@@ -181,6 +184,9 @@ export async function bootstrapRole(role: "buyer" | "seller", env: Record<string
   const client = createDurableRfqLifecycleClient<ChannelMessageSignatureV1>({
     role, store: stores.lifecycle, transport, reserveChannelId: (input) => stores.reservation.reserve(input),
     signChannelMessage: signature.signChannelMessage, verifyChannelMessage: signature.verifyChannelMessage,
+    // CORE §11.1.2(3): the operator's peer table is the trusted context that
+    // admits a session under this deployment's exact corrective profile.
+    profileAdmission: createProfileAdmission({ self: actor.claim, members: () => peers.keys(), log }),
     agreementSigner: { party: actor.claim, algorithm: "ed25519", sign: (bytes: Uint8Array) => actor.signer.sign(bytes) },
     verifyAgreementContribution: (input) => {
       const key = peers.get(input.party);

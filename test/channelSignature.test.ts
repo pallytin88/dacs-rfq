@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import { rawPublicKey } from "@kynesyslabs/dacs/crypto";
 import { admitChannelMessage, prepareChannelMessageSigningInput } from "@kynesyslabs/dacs/negotiate";
+import type { ChannelProfileAdmission } from "@kynesyslabs/dacs/negotiate";
 import type { ChannelMessage, ChannelMessageSigningInput, RfqTurnBody, UnsignedChannelMessage } from "@kynesyslabs/dacs/negotiate";
 import {
   CANONICAL_PROFILE_ID,
@@ -36,6 +37,12 @@ function unsigned(sequence: number, sender = BUYER): UnsignedChannelMessage<RfqT
 }
 
 const ctx = { sessionChannelId: "chan-sig-1", lastSequence: 0, priorChannelIds: [] as string[] };
+/** CORE §11.1.2(3): the verifier-owned capability the SDK's current-read now requires. */
+const admission: ChannelProfileAdmission = {
+  profile: DACS_V06_PROFILE, participantIdentities: [BUYER, SELLER],
+  authority: { authenticated: true, sessionId: "chan-sig-1", participantIdentities: [BUYER, SELLER], releasePin: DACS_V06_PROFILE.releasePin, moduleVersions: DACS_V06_PROFILE.moduleVersions },
+};
+const admit = (message: unknown, context: typeof ctx, verifier: unknown) => admitChannelMessage(message as never, context, verifier as never, { profileAdmission: admission });
 
 describe("channel signature adapter through the SDK seams", () => {
   const buyer = createChannelSignatureAdapter({ profile: CANONICAL_PROFILE_ID, signer: keyObjectSigner(BUYER, buyerKeys.privateKey), authority });
@@ -48,7 +55,7 @@ describe("channel signature adapter through the SDK seams", () => {
 
   test("a message signed by one role verifies on the other", async () => {
     const message = await sign(unsigned(1));
-    const admitted = await admitChannelMessage(message, ctx, seller.verifyChannelMessage);
+    const admitted = await admit(message, ctx, seller.verifyChannelMessage);
     expect(admitted.decision).toBe("pass");
     expect(message.signature).toMatchObject({ signatureVersion: "1", signer: BUYER, algorithm: "ed25519" });
     expect(buyer.profileId).toBe(CANONICAL_PROFILE_ID);
@@ -57,7 +64,7 @@ describe("channel signature adapter through the SDK seams", () => {
   test("a tampered envelope is rejected", async () => {
     const message = await sign(unsigned(1));
     const tampered = { ...message, body: { ...body, proposal: { rfqProposalVersion: "1", price: { amount: "1", currency: "DEM" } } } };
-    const admitted = await admitChannelMessage(tampered, ctx, seller.verifyChannelMessage);
+    const admitted = await admit(tampered, ctx, seller.verifyChannelMessage);
     expect(admitted.decision).toBe("fail");
   });
 
@@ -65,27 +72,27 @@ describe("channel signature adapter through the SDK seams", () => {
     // Stranger signs a message claiming to be the buyer.
     const stranger = createChannelSignatureAdapter({ profile: CANONICAL_PROFILE_ID, signer: keyObjectSigner(BUYER, strangerKeys.privateKey), authority });
     const forged = await sign(unsigned(1), stranger);
-    expect((await admitChannelMessage(forged, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
+    expect((await admit(forged, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
 
     // Seller's own key, but the envelope names the buyer as sender.
     const input = prepareChannelMessageSigningInput(unsigned(1, BUYER)) as Readonly<ChannelMessageSigningInput<RfqTurnBody>>;
     const sellerSig = createChannelSignatureAdapter({ profile: CANONICAL_PROFILE_ID, signer: keyObjectSigner(SELLER, sellerKeys.privateKey), authority });
     await expect(sellerSig.signChannelMessage(input)).rejects.toThrow(/does not match/);
     const mismatched = { ...unsigned(1, BUYER), signature: { ...(await sign(unsigned(1, SELLER), seller)).signature } };
-    expect((await admitChannelMessage(mismatched, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
+    expect((await admit(mismatched, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
   });
 
   test("a non-member sender is rejected", async () => {
     const outsider = createChannelSignatureAdapter({ profile: CANONICAL_PROFILE_ID, signer: keyObjectSigner("did:demos:outsider", strangerKeys.privateKey), authority });
     const message = await sign(unsigned(1, "did:demos:outsider"), outsider);
-    expect((await admitChannelMessage(message, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
+    expect((await admit(message, ctx, seller.verifyChannelMessage)).decision).toBe("fail");
   });
 
   test("a replayed sequence is rejected by the SDK admission gate", async () => {
     const message = await sign(unsigned(1));
-    const first = await admitChannelMessage(message, ctx, seller.verifyChannelMessage);
+    const first = await admit(message, ctx, seller.verifyChannelMessage);
     expect(first.decision).toBe("pass");
-    const replay = await admitChannelMessage(message, { ...ctx, lastSequence: 1 }, seller.verifyChannelMessage);
+    const replay = await admit(message, { ...ctx, lastSequence: 1 }, seller.verifyChannelMessage);
     expect(replay.decision).toBe("fail");
   });
 
@@ -93,7 +100,7 @@ describe("channel signature adapter through the SDK seams", () => {
     const canonical = createChannelSignatureAdapter({ profile: CANONICAL_PROFILE_ID, signer: keyObjectSigner(BUYER, buyerKeys.privateKey), authority });
     const input = prepareChannelMessageSigningInput(unsigned(1)) as Readonly<ChannelMessageSigningInput<RfqTurnBody>>;
     const message = { ...unsigned(1), signature: await canonical.signChannelMessage(input) };
-    expect((await admitChannelMessage(message, ctx, seller.verifyChannelMessage)).decision).toBe("pass");
+    expect((await admit(message, ctx, seller.verifyChannelMessage)).decision).toBe("pass");
   });
 
   test("a message signed through the SDK seam also passes the standalone canonical reader", async () => {

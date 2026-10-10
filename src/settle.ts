@@ -277,11 +277,11 @@ function contentMatches(content: { from?: unknown; to?: unknown; amount?: unknow
  * that transfer (this payer, this payee, this amount): some other included
  * failure must not release the reservation.
  */
-export async function isTerminallyFailedTransfer(reader: DemosTransactionReader, txHash: string, expected?: ExpectedTransfer): Promise<boolean> {
+export async function isTerminallyFailedTransfer(reader: DemosTransactionReader, txHash: string, expected: ExpectedTransfer): Promise<boolean> {
   try {
     const { record, content } = await readTransfer(reader, txHash);
     if (record.status !== "failed" || hex64(record.hash) !== hex64(txHash) || !Number.isSafeInteger(record.blockNumber)) return false;
-    return expected === undefined || contentMatches(content, expected);
+    return contentMatches(content, expected);
   } catch {
     return false;
   }
@@ -321,6 +321,14 @@ export async function reconcileFailedPayDemTransfer(input: {
   }
   const candidate = pair?.[1].txHash ?? input.txHash;
   if (candidate === undefined) return "unrecoverable";
+  // A hash this buyer remembered for some other reservation can never stand
+  // for this one, however well its amount and payee happen to match.
+  for (const [, other] of settlementEvidence) {
+    if (hex64(other.txHash) === hex64(candidate) && other.reservationId !== undefined && other.reservationId !== input.reservation.reservationId) {
+      log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: candidate, result: "hash-belongs-to-other-reservation", other: other.reservationId });
+      return "unrecoverable";
+    }
+  }
   // A transfer that did land settles the reservation; it is never released as absent.
   if (await isConfirmedTransfer(input.reader, candidate, expected)) {
     log({ event: "settlement-recovery", reservationId: input.reservation.reservationId, txHash: candidate, result: "already-settled" });

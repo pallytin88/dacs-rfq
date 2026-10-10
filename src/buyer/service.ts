@@ -152,6 +152,8 @@ export function createBuyerNegotiationService<TSignature>(
   const nowMs = options.nowMs ?? Date.now;
   const log = options.log ?? (() => {});
   const lastErrors = new Map<string, string>();
+  /** Jobs whose record the store refuses; retried only after a restart. */
+  const archived = new Set<string>();
 
   function fail(code: string, message: string): never {
     throw new BuyerServiceError(code, message);
@@ -270,11 +272,26 @@ export function createBuyerNegotiationService<TSignature>(
     if (summary.stoppedAt !== undefined) {
       log({ event: "buyer-drain-stopped", ...summary.stoppedAt });
     }
-    const jobs = jobId === undefined ? options.sessions.list().map((e) => e.jobId) : [jobId];
+    // Settled jobs have nothing left to advance; a job whose record the store
+    // refuses (a pre-bump record the SDK now reads as corrupt, or a session it
+    // no longer admits) is logged once and left alone instead of being retried
+    // on every tick.
+    const jobs = jobId === undefined ? options.sessions.list().filter((e) => e.settlement === undefined).map((e) => e.jobId) : [jobId];
     for (const id of jobs) {
+      if (archived.has(id)) continue;
       const resumed = await options.client.resumeOutbox(id);
       if (resumed.status !== "ready" && resumed.status !== "duplicate") lastErrors.set(id, `outbox: ${reasonOf(resumed)}`);
-      await advance(id);
+      try {
+        await advance(id);
+      } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        if (/lifecycle store: (corrupt|rejected|indeterminate)|read-only|predates/.test(reason)) {
+          archived.add(id);
+          log({ event: "job-archived", jobId: id, reason });
+          continue;
+        }
+        throw cause;
+      }
     }
   }
 

@@ -6,7 +6,7 @@
  * and waited for inclusion; prints the transaction hash.
  */
 import { join } from "node:path";
-import { fundOnLocalChain, openDemosActor } from "../src/index.js";
+import { createWalletFileLock, fundOnLocalChain, openDemosActor } from "../src/index.js";
 import { loadConfig } from "./common.mts";
 
 const [to, amountDem] = process.argv.slice(2);
@@ -16,6 +16,7 @@ const rpc = env["L2PS_RPC"];
 if (!rpc) throw new Error("L2PS_RPC missing");
 const funder = await openDemosActor({ rpc, secret: env["FUNDER_WALLET"] ?? env["BUYER_WALLET"]!, journalDir: join(env["DACS_RFQ_ROOT"]!, "funder", "l2ps-journal") });
 const before = await funder.balanceOs();
-const out = await fundOnLocalChain({ demos: funder.adapter.raw as never, to, amountDem: Number(amountDem) });
+const walletLock = createWalletFileLock({ dir: join(env["DACS_RFQ_ROOT"]!, "locks"), wallet: funder.addressHex });
+const out = await fundOnLocalChain({ demos: funder.adapter.raw as never, to, amountDem: Number(amountDem), lock: walletLock });
 console.log(JSON.stringify({ ...out, to: to.toLowerCase(), amountDem, funderBalanceBeforeDem: (before / 1_000_000_000n).toString(), funderBalanceAfterDem: ((await funder.balanceOs()) / 1_000_000_000n).toString() }));
 process.exit(out.status === "confirmed" ? 0 : 1);

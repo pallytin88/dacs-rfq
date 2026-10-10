@@ -8,7 +8,7 @@
  *   tsx bin/approve.mts reject <claim> [note]
  */
 import { join } from "node:path";
-import { createFsSubnetProvisioner, createRegistrationService, createRegistrationStore, fundOnLocalChain, openDemosActor } from "../src/index.js";
+import { createFsSubnetProvisioner, createRegistrationService, createRegistrationStore, createWalletFileLock, fundOnLocalChain, openDemosActor } from "../src/index.js";
 import { loadConfig, log } from "./common.mts";
 
 const [command, claim, ...rest] = process.argv.slice(2);
@@ -18,10 +18,12 @@ const root = join(env["DACS_RFQ_ROOT"]!, "seller");
 const store = createRegistrationStore({ path: join(root, "registrations.db") });
 const funder = await openDemosActor({ rpc: env["L2PS_RPC"]!, secret: env["SELLER_WALLET"]!, journalDir: join(root, "l2ps-journal") });
 const fundDem = Number(env["REGISTRATION_FUND_DEM"] ?? 100);
+// Same wallet as the running seller daemon: take its cross-process lock around the broadcast.
+const walletLock = createWalletFileLock({ dir: join(env["DACS_RFQ_ROOT"]!, "locks"), wallet: funder.addressHex });
 const service = createRegistrationService({
   store, host: env["L2PS_PUBLIC_RPC"] ?? env["L2PS_RPC"]!, log,
   provisioner: createFsSubnetProvisioner({ nodeRoot: env["L2PS_NODE_ROOT"]!, rpc: env["L2PS_PUBLIC_RPC"] ?? env["L2PS_RPC"]! }),
-  funder: { fund: async (addressHex) => { const out = await fundOnLocalChain({ demos: funder.adapter.raw as never, to: `0x${addressHex}`, amountDem: fundDem }); if (out.status !== "confirmed") throw new Error(`funding ${out.txHash} ended ${out.status}`); return { txHash: out.txHash }; } },
+  funder: { fund: async (addressHex, onSigned) => { const out = await fundOnLocalChain({ demos: funder.adapter.raw as never, to: `0x${addressHex}`, amountDem: fundDem, onSigned, lock: walletLock }); if (out.status !== "confirmed") throw new Error(`funding ${out.txHash} ended ${out.status}`); return { txHash: out.txHash }; }, amountDem: fundDem },
 });
 if (command === "list") {
   for (const row of service.list()) console.log(JSON.stringify({ claim: row.claim, status: row.status, requestedAt: new Date(row.requestedAt).toISOString(), uid: row.uid, fundingTx: row.fundingTx, note: row.note }));

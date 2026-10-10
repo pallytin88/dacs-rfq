@@ -24,6 +24,7 @@ import { openRoleStores } from "../src/roleStores.js";
 import type { RoleStores } from "../src/roleStores.js";
 import { createRfqHttpTransport, createRfqInboxStore, drainInbox, startRfqTransportServer } from "../src/transport/index.js";
 import type { RfqInboxStore, RfqTransportServer } from "../src/transport/index.js";
+import { createProfileAdmission } from "../src/profileAdmission.js";
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
@@ -121,6 +122,7 @@ async function startSide(role: "buyer" | "seller", root: string, keyPath: string
     reserveChannelId: (input) => stores.reservation.reserve(input),
     signChannelMessage: signature.signChannelMessage,
     verifyChannelMessage: signature.verifyChannelMessage,
+    profileAdmission: createProfileAdmission({ self: claim, members: () => peers.keys() }),
     agreementSigner: agreementSigner(claim, keys.privateKey),
     verifyAgreementContribution: verifyAgreement,
     nowMs: () => NOW,
@@ -232,6 +234,7 @@ describe("private RFQ over the interim transport", () => {
       role: "buyer" as const, store: stores1.lifecycle,
       reserveChannelId: (input: Parameters<typeof stores1.reservation.reserve>[0]) => stores1.reservation.reserve(input),
       signChannelMessage: sig.signChannelMessage, verifyChannelMessage: sig.verifyChannelMessage,
+      profileAdmission: createProfileAdmission({ self: BUYER, members: () => peers.keys() }),
       agreementSigner: agreementSigner(BUYER, buyerKeys.privateKey), verifyAgreementContribution: verifyAgreement,
       nowMs: () => NOW,
     };

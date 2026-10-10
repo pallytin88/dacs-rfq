@@ -9,6 +9,8 @@ export * from "./sessionIndex.js";
 export * from "./commit.js";
 export * from "./settle.js";
 export * from "./walletLock.js";
+export * from "./walletFileLock.js";
+export * from "./profileAdmission.js";
 export * from "./transport/l2ps.js";
 export * from "./transport/l2psDemos.js";
 export * from "./registration/credential.js";

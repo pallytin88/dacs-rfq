@@ -4,13 +4,14 @@ SuperColony's adapters for private RFQ negotiation on top of `@kynesyslabs/dacs`
 Everything here sits behind the injected seams of `createDurableRfqLifecycleClient`;
 the SDK's negotiation logic is not modified.
 
-Status (2026-10-06): Steps 1, 2, 3, 5 and 6 of the private-negotiation brief,
-verified offline end to end (`test/showcase.e2e.test.ts`,
-`test/live.wiring.test.ts`), and wired to the live Demos testnet node through
-`src/live/` and the `bin/` processes. The showcase runs on the **interim direct
-transport**; the L2PS transport (Step 4) waits on dacs-sdk#329 and a node that
-exposes the messaging server. The first live run needs funded wallets (see
-"Live runbook").
+Status (2026-10-10): all six steps of the private-negotiation brief. Verified
+offline end to end (`test/showcase.e2e.test.ts`, `test/live.wiring.test.ts`)
+and live: the showcase runs on the **L2PS subnet transport** (Step 4) against
+a self-hosted node, with listing, vet records, commitment and payment on the
+public Demos testnet. The direct HTTP transport remains available
+(`TRANSPORT=http`) for offline tests and as the reference path. Two external
+testers settled four deals on 2026-10-09 (see "L2PS transport" and
+"Registration"). The first live run needs funded wallets (see "Live runbook").
 
 ## What each piece does
 

@@ -30,6 +30,8 @@ import type { RfqInboxStore } from "./inboxStore.js";
 import type { RfqSessionAnnouncement } from "./open.js";
 
 export const L2PS_CARRIER_VERSION = "colony-rfq-l2ps:v0" as const;
+/** How far ahead of the reader's clock a carrier may be dated. */
+const FUTURE_SKEW_MS = 60_000;
 export type L2psAckStatus = "pending" | "batched" | "confirmed";
 const STATUS_RANK: Record<string, number> = { pending: 0, batched: 1, confirmed: 2 };
 const PACKET_KINDS: ReadonlySet<string> = new Set(["turn", "agreement-proposal", "agreement-contribution", "open"]);
@@ -242,6 +244,15 @@ export function createL2psInboxFeeder(options: L2psInboxFeederOptions): L2psInbo
         const carrier = carrierOf(entry);
         if (carrier === null) { seen.add(entry.hash); continue; }
         const envelope = carrier.envelope as unknown as { issuedAt?: number };
+        // The chain, not the wire, is the durable medium: a carrier is read back
+        // long after it was issued, so its expiry is checked as of its own issue
+        // time (the signed lifetime is still capped), and replay is the inbox's
+        // job (nonce + packetId). What is refused here is a carrier dated ahead
+        // of this reader's clock beyond the allowed skew.
+        if (typeof envelope.issuedAt === "number" && envelope.issuedAt > nowMs() + FUTURE_SKEW_MS) {
+          log({ event: "l2ps-carrier-rejected", innerHash: entry.hash, reason: "carrier issued in the future" });
+          seen.add(entry.hash); summary.rejected += 1; continue;
+        }
         const verified = verifyEnvelope(carrier.envelope, {
           expectedAudience: options.self.claim, peers: options.peers, expectedType: "rfq-packet",
           nowMs: typeof envelope.issuedAt === "number" ? envelope.issuedAt : nowMs(),

@@ -45,6 +45,7 @@ import {
   keyObjectSigner,
 } from "../src/index.js";
 import type { ChannelMessageSignatureV1 } from "../src/index.js";
+import { createProfileAdmission } from "../src/profileAdmission.js";
 
 const NOW = 1_780_000_000_000;
 const buyerKeys = generateKeyPairSync("ed25519");
@@ -111,6 +112,7 @@ async function role(roleName: "buyer" | "seller", base: string, peerEndpoint: ()
   const client = createDurableRfqLifecycleClient<ChannelMessageSignatureV1>({
     role: roleName, store: stores.lifecycle, transport, reserveChannelId: (input) => stores.reservation.reserve(input),
     signChannelMessage: signature.signChannelMessage, verifyChannelMessage: signature.verifyChannelMessage,
+    profileAdmission: createProfileAdmission({ self: claim, members: () => peers.keys() }),
     agreementSigner: agreementSigner(claim, keys.privateKey), verifyAgreementContribution: verifyAgreement, nowMs: () => NOW,
   });
   cleanups.push(async () => { await server.close(); inbox.close(); sessions.close(); stores.close(); });

@@ -798,8 +798,16 @@ async function verifyCanonicalSeam(
   if (Buffer.compare(Buffer.from(input.signedBytes), Buffer.from(expected)) !== 0) {
     return { decision: "error", reason: "SDK signed bytes are not the CH-8 framing of the envelope hash" };
   }
+  // CH-7: on current-read the SDK has already resolved the sender to a CH-1
+  // member and hands it over as `member`; the key is resolved for that
+  // member, never for the self-declared sender or `signature.signer`.
+  const member = (input as { member?: unknown }).member;
+  const subject = typeof member === "string" ? member : input.message.sender;
+  if (typeof member === "string" && canonicalIdentity(member) !== canonicalIdentity(input.message.sender)) {
+    return { decision: "fail", reason: "resolved member does not identify the sender" };
+  }
   return verifyMemberSignature(
-    input.message.sender, signature.algorithm, bytes, expected, authority.members, authority.resolve,
+    subject, signature.algorithm, bytes, expected, authority.members, authority.resolve,
   );
 }
 
