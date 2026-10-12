@@ -498,7 +498,7 @@ function checkProfile(profile: unknown, expected: ExpectedProfile, sessionChanne
 /**
  * Own-data copy of every member but `signature`. Plain assignment would route
  * an own `__proto__` member (which `JSON.parse` creates) through the inherited
- * setter and drop it from the signed scope (dacs-sdk GHSA-pjhm-8m5v-v63m).
+ * setter and drop it from the signed scope.
  */
 function withoutSignature(message: Record<string, unknown>): Record<string, unknown> {
   const unsigned: Record<string, unknown> = {};

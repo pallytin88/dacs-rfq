@@ -134,7 +134,7 @@ describe("canonical producer", () => {
   });
 });
 
-describe("own __proto__ members on the wire (dacs-sdk GHSA-pjhm-8m5v-v63m)", () => {
+describe("own __proto__ members on the wire", () => {
   const signer = keyObjectSigner(BUYER, buyerKeys.privateKey);
   const readAuthority = {
     members: [BUYER, SELLER],
