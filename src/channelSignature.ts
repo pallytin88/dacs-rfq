@@ -495,10 +495,16 @@ function checkProfile(profile: unknown, expected: ExpectedProfile, sessionChanne
   return { ok: true, members: identities };
 }
 
+/**
+ * Own-data copy of every member but `signature`. Plain assignment would route
+ * an own `__proto__` member (which `JSON.parse` creates) through the inherited
+ * setter and drop it from the signed scope (dacs-sdk GHSA-pjhm-8m5v-v63m).
+ */
 function withoutSignature(message: Record<string, unknown>): Record<string, unknown> {
   const unsigned: Record<string, unknown> = {};
   for (const key of Object.keys(message)) {
-    if (key !== "signature") unsigned[key] = message[key];
+    if (key === "signature") continue;
+    Object.defineProperty(unsigned, key, { value: message[key], enumerable: true, writable: true, configurable: true });
   }
   return unsigned;
 }
@@ -614,7 +620,12 @@ export async function readCanonicalChannelMessage(
   if (signature === null) return { decision: "error", reason: "signature value is malformed" };
 
   const unsigned = withoutSignature(message as unknown as Record<string, unknown>);
-  const hash = messageHashHex(unsigned);
+  let hash: string;
+  try {
+    hash = messageHashHex(unsigned);
+  } catch {
+    return { decision: "error", reason: "message has no canonical form" };
+  }
   const verified = await verifyMemberSignature(
     message.sender, message.signature.algorithm, signature, canonicalSignedBytes(hash),
     profile.members, authority.resolve,

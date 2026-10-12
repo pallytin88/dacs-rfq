@@ -133,3 +133,36 @@ describe("canonical producer", () => {
     expect(result.message?.experimentalHint).toEqual({ future: true });
   });
 });
+
+describe("own __proto__ members on the wire (dacs-sdk GHSA-pjhm-8m5v-v63m)", () => {
+  const signer = keyObjectSigner(BUYER, buyerKeys.privateKey);
+  const readAuthority = {
+    members: [BUYER, SELLER],
+    profile: { authenticated: true, sessionId: "chan-sig-1", participantIdentities: [BUYER, SELLER], ...DACS_V06_PROFILE },
+    expectedProfile: DACS_V06_PROFILE,
+    resolve: authority.resolve,
+  };
+
+  test("an unsigned __proto__ member added after signing never passes", async () => {
+    const signed = await signCanonicalChannelMessage(unsigned(1) as never, signer);
+    for (const value of ['"unsigned-claim: price was 1 USDC"', "1", "null", "true", '{"a":1}', "[1]"]) {
+      const wire = JSON.parse(JSON.stringify(signed).replace(/^\{/, `{"__proto__":${value},`)) as Record<string, unknown>;
+      expect(Object.prototype.hasOwnProperty.call(wire, "__proto__")).toBe(true);
+      const result = await readCanonicalChannelMessage(wire, ctx, readAuthority);
+      expect(result.decision).not.toBe("pass");
+      expect(result.message).toBeUndefined();
+    }
+  });
+
+  test("a producer that signs an own __proto__ member is read back with it", async () => {
+    const envelope = JSON.parse(JSON.stringify(unsigned(1)).replace(/^\{/, '{"__proto__":{"future":true},')) as Record<string, unknown>;
+    const signed = await signCanonicalChannelMessage(envelope as never, signer);
+    const wire = JSON.parse(JSON.stringify(signed)) as Record<string, unknown>;
+    const result = await readCanonicalChannelMessage(wire, ctx, readAuthority);
+    expect(result.decision).toBe("pass");
+    expect(Object.getOwnPropertyDescriptor(result.message, "__proto__")?.value).toEqual({ future: true });
+    const stripped = JSON.parse(JSON.stringify(wire)) as Record<string, unknown>;
+    delete stripped["__proto__"];
+    expect((await readCanonicalChannelMessage(stripped, ctx, readAuthority)).decision).toBe("fail");
+  });
+});
