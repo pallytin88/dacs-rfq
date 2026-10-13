@@ -93,9 +93,10 @@ surprised you: https://github.com/pallytin88/dacs-rfq/issues
 Testnet only, dedicated wallets, nothing of real value. No mnemonic, subnet
 key or bearer token in any shared text. What is public: the listing, both
 vet records, the commitment anchor and the payment, whose amount is the agreed
-price. What stays in the subnet: the offers and counters, i.e. how that price
-was reached. The public records never carry an offer, counter or turn price,
-and that property is the thing under test. The host chain behind the subnet is a
+price. So the final price is public, as the payment amount. What stays in the
+subnet: the offers and counters, i.e. how that price was reached. The public
+records never carry an offer or counter, and that property is the thing under
+test. The host chain behind the subnet is a
 one-validator dev chain, so its finality is only as trustworthy as our node;
 the public testnet is where the money moves. Node bugs come to us first, since
 the node runs an upstream branch with one local patch (history returns the

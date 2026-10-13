@@ -88,17 +88,22 @@ export function deriveProcurementJob<TSignature>(input: {
               : `${who} sent ${message.type}`;
     push({ phase: "agreeing", label, at: iso(message.sentAt) });
   }
+  // The session clock (awaitingSince) is not advanced by a terminal turn, so
+  // events that a message caused are stamped with that message's sentAt.
+  const lastMessage = record.transcript[record.transcript.length - 1];
+  const lastSentAt = lastMessage?.sentAt ?? session.awaitingSince;
   const standing = session.standingProposal;
   if (session.status === "accepted" && standing !== undefined) {
-    push({ phase: "agreeing", label: `Buyer and ${seller} agreed at ${standing.price.amount} ${standing.price.currency}`, at: iso(session.awaitingSince) });
+    push({ phase: "agreeing", label: `Buyer and ${seller} agreed at ${standing.price.amount} ${standing.price.currency}`, at: iso(lastSentAt) });
   }
   if (session.status === "rejected" || session.status === "aborted" || session.status === "timed-out" || session.status === "max-turns") {
-    push({ phase: "failed", label: `Negotiation ended: ${session.status}${session.terminalReason ? ` (${session.terminalReason})` : ""}`, at: iso(session.awaitingSince) });
+    const endedAt = session.status === "timed-out" ? record.failure?.recordedAt ?? session.awaitingSince + session.timeoutMs : lastSentAt;
+    push({ phase: "failed", label: `Negotiation ended: ${session.status}${session.terminalReason ? ` (${session.terminalReason})` : ""}`, at: iso(endedAt) });
     return { id: entry.jobId, status: "failed", phase: "failed", events, error: session.terminalReason ?? session.status, failedBeforePayment: true };
   }
   const finalized = record.agreement?.finalized;
   if (finalized !== undefined) {
-    push({ phase: "agreeing", label: "Dual-signed agreement derived from the accepted proposal and bound to the private channel's last message", at: iso(session.awaitingSince), anchorRef: `agreement-hash:${contentHash(finalized as unknown as Record<string, unknown>)}` });
+    push({ phase: "agreeing", label: "Dual-signed agreement derived from the accepted proposal and bound to the private channel's last message", at: iso(lastSentAt), anchorRef: `agreement-hash:${contentHash(finalized as unknown as Record<string, unknown>)}` });
   }
   const commitment = entry.commitment as { nativeAddress?: string; anchorTxRef?: { writeTxHash?: string }; anchorReceipt?: { transactionRef?: { value?: string } }; committedAt?: number; logicalAddress?: string } | undefined;
   if (commitment !== undefined) {

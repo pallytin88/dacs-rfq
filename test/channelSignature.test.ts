@@ -166,3 +166,24 @@ describe("own __proto__ members on the wire", () => {
     expect((await readCanonicalChannelMessage(stripped, ctx, readAuthority)).decision).toBe("fail");
   });
 });
+
+describe("wire values with no canonical form", () => {
+  const signer = keyObjectSigner(BUYER, buyerKeys.privateKey);
+  const readAuthority = {
+    members: [BUYER, SELLER],
+    profile: { authenticated: true, sessionId: "chan-sig-1", participantIdentities: [BUYER, SELLER], ...DACS_V06_PROFILE },
+    expectedProfile: DACS_V06_PROFILE,
+    resolve: authority.resolve,
+  };
+
+  test.each([
+    ["a non-finite number", JSON.parse("1e400") as number],
+    ["a lone UTF-16 surrogate", "\ud800"],
+    ["an integer above 2^53", JSON.parse("1152921504606846976") as number],
+  ])("%s as a top-level member is an error decision, not a throw", async (_name, value) => {
+    const signed = await signCanonicalChannelMessage(unsigned(1) as never, signer);
+    const wire = { ...signed, extra: value } as Record<string, unknown>;
+    const result = await readCanonicalChannelMessage(wire, ctx, readAuthority);
+    expect(result).toEqual({ decision: "error", reason: "message has no canonical form" });
+  });
+});

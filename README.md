@@ -291,8 +291,8 @@ channel packet an encrypted subnet transaction confirmed in 2–7 s, commitment
 `stor-bb0f774841fb110e057af3d40b55414d138aef31` and payment
 `d2cc363d…` on the public testnet. The host stores only ciphertext
 (`l2ps_transactions.content` null, `encrypted_payload` set), the public records
-carry no offer, counter or turn price, and a wallet outside the deal reading its
-own subnet history gets zero rows.
+carry the final price only as the payment amount and no offer or counter, and a
+wallet outside the deal reading its own subnet history gets zero rows.
 
 `bun install` hoists `@noble/hashes` 2.x over the 1.8.0 demosdk pins; if the node
 fails with `Cannot find module '@noble/hashes/sha3'`, nest a 1.8.0 copy under
